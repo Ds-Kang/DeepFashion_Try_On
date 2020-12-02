@@ -143,12 +143,18 @@ class Pix2PixHDModel(BaseModel):
         # Generator network
         netG_input_nc = input_nc
         # Main Generator
+        print(1)
+        print("Memory Allocated: ", torch.cuda.memory_allocated(0))
+        print("Memory Reserved: ", torch.cuda.memory_reserved(0))
         with torch.no_grad():
             self.Unet = networks.define_UnetMask(4, self.gpu_ids).eval()
             self.G1 = networks.define_Refine(37, 14, self.gpu_ids).eval()
             self.G2 = networks.define_Refine(19+18, 1, self.gpu_ids).eval()
             self.G = networks.define_Refine(24, 3, self.gpu_ids).eval()
 
+        print(1)
+        print("Memory Allocated: ", torch.cuda.memory_allocated(0))
+        print("Memory Reserved: ", torch.cuda.memory_reserved(0))
         self.tanh = nn.Tanh()
         self.sigmoid = nn.Sigmoid()
         self.BCE = torch.nn.BCEWithLogitsLoss()
@@ -167,6 +173,9 @@ class Pix2PixHDModel(BaseModel):
         if self.opt.verbose:
             print('---------- Networks initialized -------------')
 
+        print(1)
+        print("Memory Allocated: ", torch.cuda.memory_allocated(0))
+        print("Memory Reserved: ", torch.cuda.memory_reserved(0))
         # load networks
         if not self.isTrain or opt.continue_train or opt.load_pretrain:
             pretrained_path = '' if not self.isTrain else opt.load_pretrain
@@ -174,7 +183,11 @@ class Pix2PixHDModel(BaseModel):
             self.load_network(self.G1, 'G1', opt.which_epoch, pretrained_path)
             self.load_network(self.G2, 'G2', opt.which_epoch, pretrained_path)
             self.load_network(self.G, 'G', opt.which_epoch, pretrained_path)
+        print(1)
+        print("Memory Allocated: ", torch.cuda.memory_allocated(0))
+        print("Memory Reserved: ", torch.cuda.memory_reserved(0))
         # set loss functions and optimizers
+        
         if self.isTrain:
             if opt.pool_size > 0 and (len(self.gpu_ids)) > 1:
                 raise NotImplementedError("Fake Pool Not Implemented for MultiGPU")
@@ -210,7 +223,9 @@ class Pix2PixHDModel(BaseModel):
                 print(
                     '------------- Only training the local enhancer ork (for %d epochs) ------------' % opt.niter_fix_global)
                 print('The layers that are finetuned are ', sorted(finetune_list))
-
+        print(1)
+        print("Memory Allocated: ", torch.cuda.memory_allocated(0))
+        print("Memory Reserved: ", torch.cuda.memory_reserved(0))
 
 
     def encode_input(self, label_map, clothes_mask, all_clothes_label):
@@ -281,26 +296,39 @@ class Pix2PixHDModel(BaseModel):
         out+=(1-mask)*fake_img
         return out
     def forward(self, label, pre_clothes_mask, img_fore, clothes_mask, clothes, all_clothes_label, real_image, pose,grid,mask_fore):
+        import time
+
         # Encode Inputs
         input_label, masked_label, all_clothes_label = self.encode_input(label, clothes_mask, all_clothes_label)
         arm1_mask = torch.FloatTensor((label.cpu().numpy() == 11).astype(np.float)).cuda()
         arm2_mask = torch.FloatTensor((label.cpu().numpy() == 13).astype(np.float)).cuda()
         pre_clothes_mask=torch.FloatTensor((pre_clothes_mask.detach().cpu().numpy() > 0.5).astype(np.float)).cuda()
         clothes = clothes * pre_clothes_mask
-
         shape = pre_clothes_mask.shape
 
         G1_in = torch.cat([pre_clothes_mask, clothes, all_clothes_label, pose, self.gen_noise(shape)], dim=1)
         arm_label = self.G1.refine(G1_in)
 
+
         arm_label = self.sigmoid(arm_label)
+
+        G1_out= arm_label
+        print(G1_out.size())
+
+
         CE_loss = self.cross_entropy2d(arm_label, (label * (1 - clothes_mask)).transpose(0, 1)[0].long()) * 10
 
         armlabel_map = generate_discrete_label(arm_label.detach(), 14, False)
         dis_label = generate_discrete_label(arm_label.detach(), 14)
         G2_in = torch.cat([pre_clothes_mask, clothes, dis_label,pose,self.gen_noise(shape)], 1)
         fake_cl = self.G2.refine(G2_in)
+
         fake_cl = self.sigmoid(fake_cl)
+
+        G2_out= fake_cl
+        print(G2_out.size())
+        SGM_time=time.time()
+
         CE_loss += self.BCE(fake_cl, clothes_mask) * 10
 
         fake_cl_dis = torch.FloatTensor((fake_cl.detach().cpu().numpy() > 0.5).astype(np.float)).cuda()
@@ -310,6 +338,9 @@ class Pix2PixHDModel(BaseModel):
         new_arm2_mask = torch.FloatTensor((armlabel_map.cpu().numpy() == 13).astype(np.float)).cuda()
         fake_cl_dis=fake_cl_dis*(1- new_arm1_mask)*(1-new_arm2_mask)
         fake_cl_dis*=mask_fore
+
+        CWM_time=time.time()
+
 
         arm1_occ = clothes_mask * new_arm1_mask
         arm2_occ = clothes_mask * new_arm2_mask
@@ -324,6 +355,8 @@ class Pix2PixHDModel(BaseModel):
         armlabel_map*=(1-fake_cl_dis)
         dis_label=encode(armlabel_map,armlabel_map.shape)
 
+        Non_target_time=time.time()
+
         fake_c, warped, warped_mask,warped_grid= self.Unet(clothes, fake_cl_dis, pre_clothes_mask,grid)
         mask=fake_c[:,3,:,:]
         mask=self.sigmoid(mask)*fake_cl_dis
@@ -332,11 +365,16 @@ class Pix2PixHDModel(BaseModel):
         skin_color = self.ger_average_color((arm1_mask + arm2_mask - arm2_mask * arm1_mask),
                                             (arm1_mask + arm2_mask - arm2_mask * arm1_mask) * real_image)
         occlude = (1 - bigger_arm1_occ * (arm2_mask + arm1_mask+clothes_mask)) * (1 - bigger_arm2_occ * (arm2_mask + arm1_mask+clothes_mask))
+
+        before_G3_time=time.time()
+
         img_hole_hand = img_fore * (1 - clothes_mask) * occlude * (1 - fake_cl_dis)
 
         G_in = torch.cat([img_hole_hand, dis_label, fake_c, skin_color, self.gen_noise(shape)], 1)
         fake_image = self.G.refine(G_in.detach())
         fake_image = self.tanh(fake_image)
+
+        G3_time=time.time()
 
         loss_D_fake = 0
         loss_D_real = 0
@@ -349,7 +387,8 @@ class Pix2PixHDModel(BaseModel):
 
         return [self.loss_filter(loss_G_GAN, 0, loss_G_VGG, loss_D_real, loss_D_fake), fake_image,
                 clothes, arm_label
-            , L1_loss, style_loss, fake_cl, CE_loss,real_image,warped_grid]
+            , L1_loss, style_loss, fake_cl, CE_loss,real_image,warped_grid, SGM_time,
+            CWM_time,Non_target_time,before_G3_time,G3_time,G1_out,G2_out]
 
     def inference(self, label, label_ref, image_ref):
 

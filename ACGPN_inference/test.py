@@ -63,6 +63,7 @@ def changearm(old_label):
     label=label*(1-arm2)+arm2*4
     label=label*(1-noise)+noise*4
     return label
+    
 os.makedirs('sample',exist_ok=True)
 opt = TrainOptions().parse()
 iter_path = os.path.join(opt.checkpoints_dir, opt.name, 'iter.txt')
@@ -82,12 +83,15 @@ if opt.debug:
     opt.niter_decay = 0
     opt.max_dataset_size = 10
 
+
+
 data_loader = CreateDataLoader(opt)
 dataset = data_loader.load_data()
 dataset_size = len(data_loader)
 print('# Inference images = %d' % dataset_size)
 
 model = create_model(opt)
+
 
 total_steps = (start_epoch-1) * dataset_size + epoch_iter
 
@@ -99,10 +103,12 @@ step = 0
 
 for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
     epoch_start_time = time.time()
+    f=open("time.txt","w")
+    
+    f.write("iteration  masking_time    SGM_time CWM_time Non_target_time before_G3_time    G3_time Total_time\n")
     if epoch != start_epoch:
         epoch_iter = epoch_iter % dataset_size
     for i, data in enumerate(dataset, start=epoch_iter):
-
 
 
         iter_start_time = time.time()
@@ -124,11 +130,13 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
         img_fore_wc = img_fore * mask_fore
         all_clothes_label = changearm(data['label'])
 
-
+        masking_time= time.time()
 
         ############## Forward Pass ######################
-        losses, fake_image, real_image, input_label,L1_loss,style_loss,clothes_mask,CE_loss,rgb,alpha= model(Variable(data['label'].cuda()),Variable(data['edge'].cuda()),Variable(img_fore.cuda()),Variable(mask_clothes.cuda())
+        losses, fake_image, real_image, input_label,L1_loss,style_loss,clothes_mask,CE_loss,rgb,alpha, SGM_time,CWM_time,Non_target_time,before_G3_time,G3_time,G1_out,G2_out= model(Variable(data['label'].cuda()),Variable(data['edge'].cuda()),Variable(img_fore.cuda()),Variable(mask_clothes.cuda())
                                                                                                     ,Variable(data['color'].cuda()),Variable(all_clothes_label.cuda()),Variable(data['image'].cuda()),Variable(data['pose'].cuda()) ,Variable(data['image'].cuda()) ,Variable(mask_fore.cuda()))
+
+
 
         # sum per device losses
         losses = [ torch.mean(x) if not isinstance(x, int) else x for x in losses ]
@@ -186,6 +194,7 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
             n=str(step)+'.jpg'
             cv2.imwrite('sample/'+data['name'][0],bgr)
         step += 1
+        f.write("{} {} {}  {}  {}  {}  {}  {}\n".format(i,masking_time-iter_start_time,SGM_time-masking_time,CWM_time-SGM_time,Non_target_time-CWM_time,before_G3_time-Non_target_time,G3_time-before_G3_time,time.time()-iter_start_time))        
         print(step)
         ### save latest model
         if total_steps % opt.save_latest_freq == save_delta:
@@ -195,11 +204,13 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
             pass
         if epoch_iter >= dataset_size:
             break
+
        
     # end of epoch 
     iter_end_time = time.time()
     print('End of epoch %d / %d \t Time Taken: %d sec' %
           (epoch, opt.niter + opt.niter_decay, time.time() - epoch_start_time))
+    f.close()
     break
 
     ### save model for this epoch

@@ -1,0 +1,10 @@
+*.pth
+Data_preprocessing/
+ACGPN_inference/sample/
+*.pyc
+*.gpu01
+*.json
+*.png
+*.jpg
+server/runs/*
+ACGPN_inference/runs/
